@@ -5,7 +5,7 @@ import { useAccount, usePublicClient } from "wagmi";
 import aiJudgeAbi from "@/abi/AIJudge";
 import { contractAddress, executorAddress } from "@/config/contract";
 import { ritualChain } from "@/config/wagmi";
-import type { Bounty } from "@/lib/bounty";
+import { canJudge, type Bounty } from "@/lib/bounty";
 import { buildJudgeAllLlmInput, type JudgeSubmission } from "@/lib/ritualLlm";
 import { useWriteTx } from "@/hooks/useWriteTx";
 import { useRitualWalletStatus } from "@/hooks/useRitualWalletStatus";
@@ -36,9 +36,10 @@ export function JudgeAll({
   const walletStatus = useRitualWalletStatus(address);
 
   const count = Number(bounty.submissionCount);
+  const revealedCount = Number(bounty.revealedSubmissionCount);
 
-  // Gate per spec: owner only, has submissions, not yet judged.
-  if (!isOwner || bounty.judged || bounty.finalized || count === 0) {
+  // Gate per spec: owner only, at least one valid reveal, after reveal deadline, not yet judged.
+  if (!isOwner || !canJudge(bounty) || count === 0) {
     return null;
   }
 
@@ -47,16 +48,22 @@ export function JudgeAll({
     setGatherError(null);
     setGathering(true);
     try {
-      // 1–2. Load every submission for this bounty.
+      // 1–2. Load every commitment, then keep only valid revealed answers.
       const submissions: JudgeSubmission[] = [];
       for (let i = 0; i < count; i++) {
-        const [submitter, answer] = await publicClient.readContract({
+        const [submitter, , revealed, answer] = await publicClient.readContract({
           address: contractAddress,
           abi: aiJudgeAbi,
           functionName: "getSubmission",
           args: [bountyId, BigInt(i)],
         });
-        submissions.push({ index: i, submitter, answer });
+        if (revealed) {
+          submissions.push({ index: i, submitter, answer });
+        }
+      }
+
+      if (submissions.length === 0) {
+        throw new Error("No revealed submissions are eligible for judging.");
       }
 
       // 3–4. Build the batch judging prompt and encode the Ritual LLM request.
@@ -104,14 +111,14 @@ export function JudgeAll({
         <Button onClick={handleJudge} disabled={busy || !fundingReady} className="w-full">
           {gathering ? (
             <>
-              <Spinner /> Gathering {count} submissions…
+              <Spinner /> Gathering {revealedCount} revealed submissions…
             </>
           ) : tx.isBusy ? (
             "Judging…"
           ) : !fundingReady ? (
             "Fund RitualWallet to judge"
           ) : (
-            `Judge all (${count})`
+            `Judge revealed (${revealedCount})`
           )}
         </Button>
         {gatherError && <Notice tone="red">{gatherError}</Notice>}

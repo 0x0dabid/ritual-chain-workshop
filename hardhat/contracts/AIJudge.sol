@@ -5,13 +5,9 @@ import {PrecompileConsumer} from "./utils/PrecompileConsumer.sol";
 
 interface IRitualWallet {
     function deposit(uint256 lockDuration) external payable;
-
     function depositFor(address user, uint256 lockDuration) external payable;
-
     function withdraw(uint256 amount) external;
-
     function balanceOf(address) external view returns (uint256);
-
     function lockUntil(address) external view returns (uint256);
 }
 
@@ -21,11 +17,13 @@ contract AIJudge is PrecompileConsumer {
 
     uint256 public nextBountyId = 1;
 
-    IRitualWallet wallet =
+    IRitualWallet public wallet =
         IRitualWallet(0x532F0dF0896F353d8C3DD8cc134e8129DA2a3948);
 
     struct Submission {
         address submitter;
+        bytes32 commitment;
+        bool revealed;
         string answer;
     }
 
@@ -34,12 +32,30 @@ contract AIJudge is PrecompileConsumer {
         string title;
         string rubric;
         uint256 reward;
-        uint256 deadline;
+        uint256 submissionDeadline;
+        uint256 revealDeadline;
         bool judged;
         bool finalized;
         bytes aiReview;
         uint256 winnerIndex;
+        uint256 revealedSubmissionCount;
         Submission[] submissions;
+        mapping(address => uint256) submissionIndexPlusOne;
+    }
+
+    struct BountyView {
+        address owner;
+        string title;
+        string rubric;
+        uint256 reward;
+        uint256 submissionDeadline;
+        uint256 revealDeadline;
+        bool judged;
+        bool finalized;
+        uint256 submissionCount;
+        uint256 revealedSubmissionCount;
+        uint256 winnerIndex;
+        bytes aiReview;
     }
 
     struct ConvoHistory {
@@ -48,17 +64,25 @@ contract AIJudge is PrecompileConsumer {
         string secretsName;
     }
 
-    mapping(uint256 => Bounty) public bounties;
+    mapping(uint256 => Bounty) private bounties;
 
     event BountyCreated(
         uint256 indexed bountyId,
         address indexed owner,
         string title,
         uint256 reward,
-        uint256 deadline
+        uint256 submissionDeadline,
+        uint256 revealDeadline
     );
 
-    event AnswerSubmitted(
+    event CommitmentSubmitted(
+        uint256 indexed bountyId,
+        uint256 indexed submissionIndex,
+        address indexed submitter,
+        bytes32 commitment
+    );
+
+    event AnswerRevealed(
         uint256 indexed bountyId,
         uint256 indexed submissionIndex,
         address indexed submitter
@@ -86,48 +110,112 @@ contract AIJudge is PrecompileConsumer {
     function createBounty(
         string calldata title,
         string calldata rubric,
-        uint256 deadline
+        uint256 submissionDeadline,
+        uint256 revealDeadline
     ) external payable returns (uint256 bountyId) {
         require(msg.value > 0, "reward required");
+        require(
+            block.timestamp < submissionDeadline,
+            "submission deadline must be future"
+        );
+        require(
+            submissionDeadline < revealDeadline,
+            "reveal must be after submission"
+        );
 
         bountyId = nextBountyId++;
 
         Bounty storage bounty = bounties[bountyId];
-
         bounty.owner = msg.sender;
         bounty.title = title;
         bounty.rubric = rubric;
         bounty.reward = msg.value;
-        bounty.deadline = deadline;
+        bounty.submissionDeadline = submissionDeadline;
+        bounty.revealDeadline = revealDeadline;
         bounty.winnerIndex = type(uint256).max;
 
-        emit BountyCreated(bountyId, msg.sender, title, msg.value, deadline);
+        emit BountyCreated(
+            bountyId,
+            msg.sender,
+            title,
+            msg.value,
+            submissionDeadline,
+            revealDeadline
+        );
     }
 
-    function submitAnswer(
+    function submitCommitment(
         uint256 bountyId,
-        string calldata answer
+        bytes32 commitment
     ) external bountyExists(bountyId) {
         Bounty storage bounty = bounties[bountyId];
 
-        // require(block.timestamp < bounty.deadline, "submissions closed");
+        require(block.timestamp < bounty.submissionDeadline, "submission phase closed");
         require(!bounty.judged, "already judged");
         require(!bounty.finalized, "already finalized");
+        require(commitment != bytes32(0), "empty commitment");
         require(
             bounty.submissions.length < MAX_SUBMISSIONS,
             "too many submissions"
         );
-        require(bytes(answer).length <= MAX_ANSWER_LENGTH, "answer too long");
+        require(
+            bounty.submissionIndexPlusOne[msg.sender] == 0,
+            "already committed"
+        );
 
         bounty.submissions.push(
-            Submission({submitter: msg.sender, answer: answer})
+            Submission({
+                submitter: msg.sender,
+                commitment: commitment,
+                revealed: false,
+                answer: ""
+            })
         );
+        bounty.submissionIndexPlusOne[msg.sender] = bounty.submissions.length;
 
-        emit AnswerSubmitted(
+        emit CommitmentSubmitted(
             bountyId,
             bounty.submissions.length - 1,
-            msg.sender
+            msg.sender,
+            commitment
         );
+    }
+
+    function revealAnswer(
+        uint256 bountyId,
+        string calldata answer,
+        bytes32 salt
+    ) external bountyExists(bountyId) {
+        Bounty storage bounty = bounties[bountyId];
+
+        require(
+            block.timestamp >= bounty.submissionDeadline,
+            "reveal phase not started"
+        );
+        require(block.timestamp < bounty.revealDeadline, "reveal phase closed");
+        require(!bounty.judged, "already judged");
+        require(!bounty.finalized, "already finalized");
+        require(bytes(answer).length <= MAX_ANSWER_LENGTH, "answer too long");
+
+        uint256 indexPlusOne = bounty.submissionIndexPlusOne[msg.sender];
+        require(indexPlusOne != 0, "no commitment");
+
+        Submission storage submission = bounty.submissions[indexPlusOne - 1];
+        require(!submission.revealed, "already revealed");
+
+        bytes32 expectedCommitment = keccak256(
+            abi.encodePacked(answer, salt, msg.sender, bountyId)
+        );
+        require(
+            expectedCommitment == submission.commitment,
+            "commitment mismatch"
+        );
+
+        submission.answer = answer;
+        submission.revealed = true;
+        bounty.revealedSubmissionCount++;
+
+        emit AnswerRevealed(bountyId, indexPlusOne - 1, msg.sender);
     }
 
     function judgeAll(
@@ -138,7 +226,8 @@ contract AIJudge is PrecompileConsumer {
 
         require(!bounty.judged, "already judged");
         require(!bounty.finalized, "already finalized");
-        require(bounty.submissions.length > 0, "no submissions");
+        require(block.timestamp >= bounty.revealDeadline, "reveal phase still active");
+        require(bounty.revealedSubmissionCount > 0, "no revealed submissions");
 
         bytes memory output = _executePrecompile(
             LLM_INFERENCE_PRECOMPILE,
@@ -169,6 +258,8 @@ contract AIJudge is PrecompileConsumer {
 
         require(bounty.judged, "not judged yet");
         require(!bounty.finalized, "already finalized");
+        require(winnerIndex < bounty.submissions.length, "invalid winner");
+        require(bounty.submissions[winnerIndex].revealed, "winner not revealed");
 
         bounty.finalized = true;
         bounty.winnerIndex = winnerIndex;
@@ -185,37 +276,24 @@ contract AIJudge is PrecompileConsumer {
 
     function getBounty(
         uint256 bountyId
-    )
-        external
-        view
-        bountyExists(bountyId)
-        returns (
-            address owner,
-            string memory title,
-            string memory rubric,
-            uint256 reward,
-            uint256 deadline,
-            bool judged,
-            bool finalized,
-            uint256 submissionCount,
-            uint256 winnerIndex,
-            bytes memory aiReview
-        )
-    {
+    ) external view bountyExists(bountyId) returns (BountyView memory) {
         Bounty storage bounty = bounties[bountyId];
 
-        return (
-            bounty.owner,
-            bounty.title,
-            bounty.rubric,
-            bounty.reward,
-            bounty.deadline,
-            bounty.judged,
-            bounty.finalized,
-            bounty.submissions.length,
-            bounty.winnerIndex,
-            bounty.aiReview
-        );
+        return
+            BountyView({
+                owner: bounty.owner,
+                title: bounty.title,
+                rubric: bounty.rubric,
+                reward: bounty.reward,
+                submissionDeadline: bounty.submissionDeadline,
+                revealDeadline: bounty.revealDeadline,
+                judged: bounty.judged,
+                finalized: bounty.finalized,
+                submissionCount: bounty.submissions.length,
+                revealedSubmissionCount: bounty.revealedSubmissionCount,
+                winnerIndex: bounty.winnerIndex,
+                aiReview: bounty.aiReview
+            });
     }
 
     function getSubmission(
@@ -225,7 +303,12 @@ contract AIJudge is PrecompileConsumer {
         external
         view
         bountyExists(bountyId)
-        returns (address submitter, string memory answer)
+        returns (
+            address submitter,
+            bytes32 commitment,
+            bool revealed,
+            string memory answer
+        )
     {
         Bounty storage bounty = bounties[bountyId];
 
@@ -233,6 +316,24 @@ contract AIJudge is PrecompileConsumer {
 
         Submission storage submission = bounty.submissions[index];
 
-        return (submission.submitter, submission.answer);
+        return (
+            submission.submitter,
+            submission.commitment,
+            submission.revealed,
+            submission.answer
+        );
+    }
+
+    function getSubmissionIndex(
+        uint256 bountyId,
+        address submitter
+    ) external view bountyExists(bountyId) returns (bool exists, uint256 index) {
+        uint256 indexPlusOne = bounties[bountyId].submissionIndexPlusOne[
+            submitter
+        ];
+        if (indexPlusOne == 0) {
+            return (false, 0);
+        }
+        return (true, indexPlusOne - 1);
     }
 }

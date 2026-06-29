@@ -11,11 +11,13 @@ import { Card, CardHeader, CardBody, Badge } from "@/components/ui";
 export function SubmissionsList({
   bountyId,
   count,
+  revealedCount,
   judge,
   finalWinner,
 }: {
   bountyId: bigint;
   count: number;
+  revealedCount: number;
   judge?: JudgeResult | null;
   finalWinner?: number;
 }) {
@@ -25,12 +27,12 @@ export function SubmissionsList({
     <Card>
       <CardHeader
         title="Submissions"
-        subtitle="All submissions are judged together after the deadline."
-        action={<Badge tone="zinc">{count}</Badge>}
+        subtitle="Commitments are hidden until participants reveal answers. Only revealed answers are judged."
+        action={<Badge tone="zinc">{revealedCount}/{count} revealed</Badge>}
       />
       <CardBody className="space-y-3">
         {count === 0 ? (
-          <p className="text-sm text-zinc-500">No submissions yet.</p>
+          <p className="text-sm text-zinc-500">No commitments yet.</p>
         ) : (
           indices.map((i) => (
             <SubmissionRow
@@ -71,7 +73,9 @@ function SubmissionRow({
   });
 
   const submitter = data?.[0];
-  const answer = data?.[1];
+  const commitment = data?.[1];
+  const revealed = data?.[2] ?? false;
+  const answer = data?.[3];
 
   return (
     <div
@@ -91,6 +95,7 @@ function SubmissionRow({
           </span>
         </div>
         <div className="flex items-center gap-1.5">
+          <Badge tone={revealed ? "green" : "amber"}>{revealed ? "Revealed" : "Committed"}</Badge>
           {ranking ? <Badge tone="zinc">score {ranking.score}</Badge> : null}
           {isWinner ? (
             <Badge tone="green">Winner</Badge>
@@ -100,9 +105,15 @@ function SubmissionRow({
         </div>
       </div>
 
-      <p className="mt-2 whitespace-pre-wrap break-words text-sm text-zinc-200">
-        {answer ?? (isLoading ? "" : "-")}
-      </p>
+      {revealed ? (
+        <p className="mt-2 whitespace-pre-wrap break-words text-sm text-zinc-200">
+          {answer ?? (isLoading ? "" : "-")}
+        </p>
+      ) : (
+        <p className="mt-2 break-all rounded-lg bg-black/20 p-2 font-mono text-[11px] text-zinc-500">
+          commitment: {commitment ?? (isLoading ? "loading…" : "-")}
+        </p>
+      )}
 
       {ranking?.reason ? (
         <p className="mt-2 border-t border-white/5 pt-2 text-xs text-zinc-400">

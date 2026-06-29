@@ -84,6 +84,7 @@ export function BountyView({ bountyId }: { bountyId: bigint }) {
         <SubmissionsList
           bountyId={bountyId}
           count={Number(bounty.submissionCount)}
+          revealedCount={Number(bounty.revealedSubmissionCount)}
           judge={judge}
           finalWinner={
             bounty.finalized ? Number(bounty.winnerIndex) : undefined
