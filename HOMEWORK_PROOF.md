@@ -108,4 +108,4 @@ Suggested struggle answer:
 
 > The hardest step was converting the original public `submitAnswer` flow into a safe commit-reveal lifecycle without breaking the Ritual batch AI judging step. I had to separate submission and reveal deadlines, store only commitments before reveal, verify `keccak256(abi.encodePacked(answer, salt, msg.sender, bountyId))`, and make sure `judgeAll` only includes valid revealed answers.
 
-Deployment address and transaction hash will be filled after deployment to Ritual Chain.
+Deployment proof values are intentionally not committed here to avoid exposing wallet-linked metadata in the public repository. Submit the deployed contract address and deployment transaction hash directly in the private proof form.
